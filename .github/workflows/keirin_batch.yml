@@ -1,0 +1,30 @@
+name: Keirin Daily Batch
+
+on:
+  schedule:
+    - cron: '0 23 * * *'
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: install libraries
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: run batch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python keirin_batch.py
+          python keirin_supabase_save.py

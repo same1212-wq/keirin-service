@@ -1,10 +1,11 @@
 import json
 import re
+import os
 import requests
 from datetime import datetime
 
-SUPABASE_URL = "https://bjxosmqlmssxvoddeyae.supabase.co"
-SUPABASE_KEY = "sb_publishable_HUOYksS-WVa6aXuyZCsflg_ZkmThDcK"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://bjxosmqlmssxvoddeyae.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_HUOYksS-WVa6aXuyZCsflg_ZkmThDcK")
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -14,7 +15,6 @@ HEADERS = {
 }
 
 def upsert(table, data):
-    """Supabaseにupsert（重複時は更新）"""
     res = requests.post(
         f"{SUPABASE_URL}/rest/v1/{table}",
         headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
@@ -24,14 +24,12 @@ def upsert(table, data):
     return res.status_code in [200, 201]
 
 def extract_race_date(race_id):
-    """レースIDから日付を抽出（例: 1220260610020001 → 2026-06-10）"""
     m = re.search(r"(\d{4})(\d{2})(\d{2})", race_id[2:10])
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
     return None
 
 def save_race(race_data):
-    """racesテーブルに保存"""
     race_id = race_data["race"]["race_id"]
     record = {
         "race_id":      race_id,
@@ -43,7 +41,6 @@ def save_race(race_data):
     return upsert("races", record)
 
 def save_entries(race_data):
-    """race_entriesテーブルに保存"""
     race_id = race_data["race"]["race_id"]
     records = []
     for p in race_data.get("entries", []):
@@ -73,7 +70,6 @@ def save_entries(race_data):
     return upsert("race_entries", records)
 
 def save_results(race_data):
-    """race_resultsテーブルに保存"""
     race_id = race_data["race"]["race_id"]
     records = []
     for r in race_data.get("results", []):
@@ -93,7 +89,6 @@ def save_results(race_data):
     return upsert("race_results", records)
 
 def save_lines(race_data):
-    """race_linesテーブルに保存"""
     race_id = race_data["race"]["race_id"]
     records = []
     for line in race_data.get("lines", {}).get("line_detail", []):
@@ -109,7 +104,6 @@ def save_lines(race_data):
     return upsert("race_lines", records)
 
 def save_prediction(race_data):
-    """ai_predictionsテーブルに保存"""
     meta = race_data.get("prediction_meta", {})
     if not meta.get("honmei_car"):
         return True
@@ -122,57 +116,44 @@ def save_prediction(race_data):
     return upsert("ai_predictions", record)
 
 def save_batch(batch_file):
-    """batchファイルを読み込んでSupabaseに全件保存"""
     with open(batch_file, "r", encoding="utf-8") as f:
         data = json.load(f)
-
     races = data.get("races", [])
     total = len(races)
     success = 0
     errors = []
-
     print(f"保存開始: {batch_file}")
     print(f"対象レース数: {total}")
-    print()
-
     for i, race_data in enumerate(races, 1):
         race_id = race_data["race"]["race_id"]
         stadium = race_data["race"]["stadium_name"]
         print(f"[{i:3d}/{total}] {stadium} {race_id[-4:]}", end=" ")
-
         ok = True
         ok = ok and save_race(race_data)
         ok = ok and save_entries(race_data)
         ok = ok and save_results(race_data)
         ok = ok and save_lines(race_data)
         ok = ok and save_prediction(race_data)
-
         if ok:
             success += 1
             print("-> OK")
         else:
             errors.append(race_id)
             print("-> ERROR")
-
-    print()
-    print("=" * 50)
-    print(f"完了: {success}/{total} 件保存成功")
+    print(f"\n完了: {success}/{total} 件保存成功")
     if errors:
         print(f"エラー: {errors}")
 
 if __name__ == "__main__":
     import sys
     import os
-    # 引数でファイル指定、なければ最新のbatchファイルを使用
     if len(sys.argv) > 1:
         batch_file = sys.argv[1]
     else:
-        # 最新のbatch_*.jsonを探す
         files = sorted([f for f in os.listdir(".") if f.startswith("batch_") and f.endswith(".json")])
         if not files:
             print("batch_*.jsonが見つかりません")
             sys.exit(1)
         batch_file = files[-1]
         print(f"最新バッチファイルを使用: {batch_file}")
-
     save_batch(batch_file)
