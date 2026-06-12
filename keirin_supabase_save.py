@@ -14,14 +14,31 @@ HEADERS = {
     "Prefer": "return=minimal"
 }
 
+CONFLICT_KEYS = {
+    "races":        "race_id",
+    "race_entries": "race_id,car_no",
+    "race_results": "race_id,rank",
+    "race_lines":   "race_id,line_no",
+    "ai_predictions": "race_id",
+}
+
 def upsert(table, data):
+    conflict_key = CONFLICT_KEYS.get(table, "")
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    if conflict_key:
+        url += f"?on_conflict={conflict_key}"
     res = requests.post(
-        f"{SUPABASE_URL}/rest/v1/{table}",
-        headers={**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+        url,
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        },
         json=data if isinstance(data, list) else [data],
         timeout=15
     )
-    return res.status_code in [200, 201]
+    return res.status_code in [200, 201, 204]
 
 def extract_race_date(race_id):
     m = re.search(r"(\d{4})(\d{2})(\d{2})", race_id[2:10])
@@ -37,6 +54,9 @@ def save_race(race_data):
         "race_date":    extract_race_date(race_id),
         "scraped_at":   race_data["race"]["scraped_at"],
         "player_count": race_data["race"]["player_count"],
+        "grade":        race_data["race"].get("grade", ""),
+        "race_type":    race_data["race"].get("race_type", ""),
+        "race_name":    race_data["race"].get("race_name", ""),
     }
     return upsert("races", record)
 
@@ -64,6 +84,19 @@ def save_entries(race_data):
             "recent_this_venue":     p.get("recent_this_venue", ""),
             "recent_last_venue":     p.get("recent_last_venue", ""),
             "recent_2nd_last_venue": p.get("recent_2nd_last_venue", ""),
+            "wins_s":        p.get("wins_s"),
+            "wins_b":        p.get("wins_b"),
+            "kimete_nige":   p.get("kimete_nige"),
+            "kimete_makuri": p.get("kimete_makuri"),
+            "kimete_sashi":  p.get("kimete_sashi"),
+            "kimete_ma":     p.get("kimete_ma"),
+            "rank1_4m":      p.get("rank1_4m"),
+            "rank2_4m":      p.get("rank2_4m"),
+            "rank3_4m":      p.get("rank3_4m"),
+            "rank_out_4m":   p.get("rank_out_4m"),
+            "win_rate_4m":   p.get("win_rate_4m"),
+            "top2_rate_4m":  p.get("top2_rate_4m"),
+            "top3_rate_4m":  p.get("top3_rate_4m"),
         })
     if not records:
         return True
