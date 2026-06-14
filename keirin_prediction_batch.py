@@ -304,20 +304,81 @@ def run_prediction_batch(date_str=None, mode="predict"):
                 print("-> 結果未確定")
                 continue
 
-            winner_car = results[0]["car_no"]
+            # 全着順を取得
+            res_r_all = requests.get(
+                f"{SUPABASE_URL}/rest/v1/race_results?race_id=eq.{race_id}&order=rank",
+                headers=GET_HEADERS
+            )
+            all_results = res_r_all.json()
+            if not all_results:
+                print("-> 結果未確定")
+                continue
+
+            # 実際の着順を取得
+            rank_to_car = {r["rank"]: r["car_no"] for r in all_results}
+            car_to_rank = {r["car_no"]: r["rank"] for r in all_results}
+            actual_1st = rank_to_car.get(1)
+            actual_2nd = rank_to_car.get(2)
+            actual_3rd = rank_to_car.get(3)
+            actual_top2 = set([actual_1st, actual_2nd])
+            actual_top3 = set([actual_1st, actual_2nd, actual_3rd])
+
+            # 予想データ取得
             honmei_car = pred_record["honmei_car"]
-            is_hit = (honmei_car == winner_car)
+            taikou_car = pred_record["taikou_car"]
+            ana_car    = pred_record["ana_car"]
+            nisha_tan  = pred_record.get("nisha_tan", "")
+            sanren_tan = pred_record.get("sanren_tan", "")
+            sanren_fuku= pred_record.get("sanren_fuku", "")
+            wide       = pred_record.get("wide", "")
+
+            # 1着的中
+            is_honmei_1st = (honmei_car == actual_1st)
+
+            # 2車単的中（本命→対抗）
+            hit_nisha_tan = (honmei_car == actual_1st and taikou_car == actual_2nd)
+
+            # 2車複的中（本命・対抗が1〜2着）
+            hit_nisha_fuku = ({honmei_car, taikou_car} == actual_top2)
+
+            # 3連単的中
+            if sanren_tan and "→" in sanren_tan:
+                st_cars = [int(c) for c in sanren_tan.split("→") if c.isdigit()]
+                hit_sanren_tan = (
+                    len(st_cars) >= 3 and
+                    st_cars[0] == actual_1st and
+                    st_cars[1] == actual_2nd and
+                    st_cars[2] == actual_3rd
+                )
+            else:
+                hit_sanren_tan = False
+
+            # 3連複的中（予想上位3頭が実際の1〜3着と一致）
+            if sanren_fuku and "-" in sanren_fuku:
+                sf_cars = set([int(c) for c in sanren_fuku.split("-") if c.isdigit()])
+                hit_sanren_fuku = (sf_cars == actual_top3)
+            else:
+                pred_top3 = set(filter(None, [honmei_car, taikou_car, ana_car]))
+                hit_sanren_fuku = (pred_top3 == actual_top3)
+
+            # ワイド的中（3通り）
+            wide_pairs = []
+            if honmei_car and taikou_car:
+                wide_pairs.append({honmei_car, taikou_car})
+            if honmei_car and ana_car:
+                wide_pairs.append({honmei_car, ana_car})
+            if taikou_car and ana_car:
+                wide_pairs.append({taikou_car, ana_car})
+
+            hit_wide1 = len(wide_pairs) > 0 and wide_pairs[0].issubset(actual_top3)
+            hit_wide2 = len(wide_pairs) > 1 and wide_pairs[1].issubset(actual_top3)
+            hit_wide3 = len(wide_pairs) > 2 and wide_pairs[2].issubset(actual_top3)
 
             # miss_reason判定
-            if is_hit:
+            if is_honmei_1st:
                 miss_reason = None
             else:
-                res_r3 = requests.get(
-                    f"{SUPABASE_URL}/rest/v1/race_results?race_id=eq.{race_id}&order=rank",
-                    headers=GET_HEADERS
-                )
-                all_results = res_r3.json()
-                honmei_rank = next((r["rank"] for r in all_results if r["car_no"] == honmei_car), 99)
+                honmei_rank = car_to_rank.get(honmei_car, 99)
                 if honmei_rank >= 6:
                     miss_reason = "本命大敗（展開・落車・失格の可能性）"
                 elif honmei_rank in [4, 5]:
@@ -327,10 +388,80 @@ def run_prediction_batch(date_str=None, mode="predict"):
                 else:
                     miss_reason = "予想外の展開"
 
+            # 配当金をSupabaseから取得（payoutsテーブルがあれば）
+            # 予想買い目の配当金を特定
+            nisha_tan_key  = f"{honmei_car}-{taikou_car}" if honmei_car and taikou_car else ""
+            nisha_fuku_key = "=".join(map(str, sorted([honmei_car, taikou_car]))) if honmei_car and taikou_car else ""
+            top3_list = [int(c) for c in (pred_record.get("top3_cars") or "").split("-") if c.isdigit()]
+            sanren_tan_key  = "-".join(map(str, top3_list)) if len(top3_list) >= 3 else ""
+            sanren_fuku_key = "=".join(map(str, sorted(top3_list[:3]))) if len(top3_list) >= 3 else ""
+
+            # 払戻テーブルから配当金を取得
+            from keirin_data_formatter import extract_payouts
+            from bs4 import BeautifulSoup
+            payouts = {}
+            try:
+                res_page = requests.get(
+                    f"https://keirin.kdreams.jp/{race[chr(115)+chr(116)+chr(97)+chr(100)+chr(105)+chr(117)+chr(109)+chr(95)+chr(99)+chr(111)+chr(100)+chr(101)]}/racedetail/{race_id}/",
+                    headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+                    timeout=20
+                )
+                if res_page.status_code == 200:
+                    psoup = BeautifulSoup(res_page.content, "html.parser")
+                    payouts = extract_payouts(psoup)
+            except Exception as e:
+                print(f"(配当取得失敗:{e})", end=" ")
+                payouts = {}
+
+            # 各賭け式の配当金
+            p_nisha_tan   = payouts.get(nisha_tan_key)
+            p_nisha_fuku  = payouts.get(nisha_fuku_key)
+            p_sanren_tan  = payouts.get(sanren_tan_key)
+            p_sanren_fuku = payouts.get(sanren_fuku_key)
+
+            # ワイド配当（3通り）
+            wide_pairs_keys = []
+            if honmei_car and taikou_car:
+                wide_pairs_keys.append("=".join(map(str, sorted([honmei_car, taikou_car]))))
+            if honmei_car and ana_car:
+                wide_pairs_keys.append("=".join(map(str, sorted([honmei_car, ana_car]))))
+            if taikou_car and ana_car:
+                wide_pairs_keys.append("=".join(map(str, sorted([taikou_car, ana_car]))))
+            p_wide1 = payouts.get(wide_pairs_keys[0]) if len(wide_pairs_keys) > 0 else None
+            p_wide2 = payouts.get(wide_pairs_keys[1]) if len(wide_pairs_keys) > 1 else None
+            p_wide3 = payouts.get(wide_pairs_keys[2]) if len(wide_pairs_keys) > 2 else None
+
+            # 回収率計算（100円投資として）
+            roi_nisha_tan   = p_nisha_tan / 100   if hit_nisha_tan  and p_nisha_tan   else (0 if hit_nisha_tan  else None)
+            roi_nisha_fuku  = p_nisha_fuku / 100  if hit_nisha_fuku and p_nisha_fuku  else (0 if hit_nisha_fuku else None)
+            roi_sanren_tan  = p_sanren_tan / 100  if hit_sanren_tan and p_sanren_tan  else (0 if hit_sanren_tan else None)
+            roi_sanren_fuku = p_sanren_fuku / 100 if hit_sanren_fuku and p_sanren_fuku else (0 if hit_sanren_fuku else None)
+            wide_hit_payouts = [p for p, h in [(p_wide1, hit_wide1),(p_wide2, hit_wide2),(p_wide3, hit_wide3)] if h and p]
+            roi_wide = sum(wide_hit_payouts) / (len(wide_pairs_keys) * 100) if wide_hit_payouts else None
+
             # DB更新
             update_data = {
-                "is_honmei_hit": bool(is_hit),
-                "miss_reason":   miss_reason,
+                "is_honmei_hit":    bool(is_honmei_1st),
+                "hit_nisha_tan":    bool(hit_nisha_tan),
+                "hit_nisha_fuku":   bool(hit_nisha_fuku),
+                "hit_sanren_tan":   bool(hit_sanren_tan),
+                "hit_sanren_fuku":  bool(hit_sanren_fuku),
+                "hit_wide1":        bool(hit_wide1),
+                "hit_wide2":        bool(hit_wide2),
+                "hit_wide3":        bool(hit_wide3),
+                "miss_reason":      miss_reason,
+                "payout_nisha_tan":  p_nisha_tan,
+                "payout_nisha_fuku": p_nisha_fuku,
+                "payout_sanren_tan": p_sanren_tan,
+                "payout_sanren_fuku":p_sanren_fuku,
+                "payout_wide1":      p_wide1,
+                "payout_wide2":      p_wide2,
+                "payout_wide3":      p_wide3,
+                "roi_nisha_tan":     roi_nisha_tan,
+                "roi_nisha_fuku":    roi_nisha_fuku,
+                "roi_sanren_tan":    roi_sanren_tan,
+                "roi_sanren_fuku":   roi_sanren_fuku,
+                "roi_wide":          roi_wide,
             }
             res_u = requests.patch(
                 f"{SUPABASE_URL}/rest/v1/ai_predictions?race_id=eq.{race_id}",
@@ -339,7 +470,14 @@ def run_prediction_batch(date_str=None, mode="predict"):
                 timeout=15
             )
             if res_u.status_code == 204:
-                status = "◎的中！" if is_hit else f"×外れ({miss_reason})"
+                hits = []
+                if is_honmei_1st: hits.append("1着◎")
+                if hit_nisha_tan:  hits.append("2車単◎")
+                if hit_nisha_fuku: hits.append("2車複◎")
+                if hit_sanren_tan: hits.append("3連単◎")
+                if hit_sanren_fuku:hits.append("3連複◎")
+                if hit_wide1 or hit_wide2 or hit_wide3: hits.append("ワイド◎")
+                status = " ".join(hits) if hits else f"全外れ({miss_reason})"
                 print(f"-> {status}")
                 success += 1
             else:

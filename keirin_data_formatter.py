@@ -349,6 +349,28 @@ def extract_results_direct(soup):
     results.sort(key=lambda x: x["rank"])
     return results
 
+def extract_payouts(soup):
+    """払戻金テーブルから配当金を取得"""
+    import re
+    payouts = {}
+    table = soup.find("table", class_="refund_table")
+    if not table:
+        return payouts
+    for dl in table.find_all("dl"):
+        dt = dl.find("dt")
+        dd = dl.find("dd")
+        if not dt or not dd:
+            continue
+        combo = dt.get_text(strip=True)
+        span = dd.find("span")
+        if span:
+            span.decompose()
+        payout_text = dd.get_text(strip=True)
+        payout = int(re.sub(r"[^0-9]", "", payout_text)) if payout_text else 0
+        if combo and payout:
+            payouts[combo] = payout
+    return payouts
+
 def extract_race_order(soup):
     for table in soup.find_all("table"):
         rows = table.find_all("tr")
@@ -386,6 +408,7 @@ def scrape_and_format(race_url):
     players    = parse_stadium_stats_by_index(soup, players)
     results    = extract_results_direct(soup)
     race_order = extract_race_order(soup)
+    payouts    = extract_payouts(soup)
 
     if not players:
         return {"error": "\u9078\u624b\u30c7\u30fc\u30bf\u306a\u3057", "url": race_url}
@@ -415,6 +438,7 @@ def scrape_and_format(race_url):
         "results":    results,
         "lines":      line_info,
         "race_order": race_order,
+        "payouts":    payouts,
         "prediction_meta": {
             "honmei_car":    honmei["car_no"] if honmei else None,
             "honmei_name":   honmei["name"] if honmei else None,
