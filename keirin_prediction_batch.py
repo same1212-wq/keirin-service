@@ -28,6 +28,7 @@ GET_HEADERS = {
 with open("keirin_model.pkl", "rb") as f:
     saved = pickle.load(f)
 model_top1 = saved.get("model_top1") or saved.get("model")
+model_top2 = saved.get("model_top2")
 model_top3 = saved.get("model_top3") or saved.get("model")
 feature_cols = saved["feature_cols"]
 
