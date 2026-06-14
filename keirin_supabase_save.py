@@ -41,10 +41,24 @@ def upsert(table, data):
     return res.status_code in [200, 201, 204]
 
 def extract_race_date(race_id):
-    m = re.search(r"(\d{4})(\d{2})(\d{2})", race_id[2:10])
-    if m:
-        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    return None
+    """
+    レースIDから実際のレース日を計算
+    例: 2320260613020001
+      開幕日: 2026-06-13
+      日程番号: 02 (2日目)
+      実際のレース日: 2026-06-13 + (2-1)日 = 2026-06-14
+    """
+    from datetime import datetime, timedelta
+    try:
+        year  = int(race_id[2:6])
+        month = int(race_id[6:8])
+        day   = int(race_id[8:10])
+        day_no = int(race_id[10:12])  # 日程番号
+        base_date = datetime(year, month, day)
+        actual_date = base_date + timedelta(days=day_no - 1)
+        return actual_date.strftime("%Y-%m-%d")
+    except:
+        return None
 
 def save_race(race_data):
     race_id = race_data["race"]["race_id"]
